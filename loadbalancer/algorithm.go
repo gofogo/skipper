@@ -2,7 +2,9 @@ package loadbalancer
 
 import (
 	"errors"
+	"hash/fnv"
 	"math/rand"
+	"net/http"
 	"net/url"
 	"sync"
 
@@ -16,11 +18,15 @@ type algorithmType int
 const (
 	none algorithmType = iota
 	roundRobinAlgorithm
+	randomAlgorithm
+	consistentHashingAlgorithm
 )
 
 var (
 	algorithms = map[algorithmType]initializeAgorithm{
-		roundRobinAlgorithm: newRoundRobin,
+		roundRobinAlgorithm:        newRoundRobin,
+		randomAlgorithm:            newRandom,
+		consistentHashingAlgorithm: newConsistentHashing,
 	}
 	defaultAlgorithm = newRoundRobin
 )
@@ -36,12 +42,45 @@ type roundRobin struct {
 	index int
 }
 
-// Apply implements routing.LBAlgorithm.
-func (r *roundRobin) Apply(endpoints []routing.LBEndpoint) routing.LBEndpoint {
+// Apply implements routing.LBAlgorithm with a roundrobin algorithm.
+func (r *roundRobin) Apply(_ *http.Request, endpoints []routing.LBEndpoint) routing.LBEndpoint {
 	r.mx.Lock()
 	defer r.mx.Unlock()
 	r.index = (r.index + 1) % len(endpoints)
 	return endpoints[r.index]
+}
+
+type random struct{}
+
+func newRandom(endpoints []string) routing.LBAlgorithm {
+	return &random{}
+}
+
+// Apply implements routing.LBAlgorithm with a stateless random algorithm.
+func (r *random) Apply(_ *http.Request, endpoints []routing.LBEndpoint) routing.LBEndpoint {
+	return endpoints[rand.Intn(len(endpoints))]
+}
+
+type consistentHashing struct{}
+
+func newConsistentHashing(endpoints []string) routing.LBAlgorithm {
+	return &consistentHashing{}
+}
+
+// Apply implements routing.LBAlgorithm with a consistent hash algorithm.
+func (*consistentHashing) Apply(r *http.Request, endpoints []routing.LBEndpoint) routing.LBEndpoint {
+	var sum uint32
+	h := fnv.New32()
+	if _, err := h.Write([]byte(r.RemoteAddr)); err != nil {
+		log.Errorf("Failed to write '%s' into hash: %v", r.RemoteAddr, err)
+		return endpoints[0]
+	}
+	sum = h.Sum32()
+	choice := int(sum) % len(endpoints)
+	if choice < 0 {
+		choice = len(endpoints) + choice
+	}
+	return endpoints[choice]
 }
 
 type (
@@ -63,6 +102,10 @@ func algorithmTypeFromString(a string) (algorithmType, error) {
 		return none, nil
 	case "roundRobin":
 		return roundRobinAlgorithm, nil
+	case "random":
+		return randomAlgorithm, nil
+	case "consistentHash":
+		return consistentHashingAlgorithm, nil
 	default:
 		return none, errors.New("unsupported algorithm")
 	}

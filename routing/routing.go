@@ -145,7 +145,7 @@ type LBEndpoint struct {
 // LBAlgorithm implementations apply a load balancing algorithm
 // over the possible endpoints of a load balanced route.
 type LBAlgorithm interface {
-	Apply([]LBEndpoint) LBEndpoint
+	Apply(*http.Request, []LBEndpoint) LBEndpoint
 }
 
 // Route object with preprocessed filter instances.
